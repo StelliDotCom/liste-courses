@@ -1,9 +1,10 @@
-const CACHE = 'courses-v3';
+const CACHE = 'courses-v4';
 const ASSETS = [
   '/',
   '/index.html',
   '/style.css',
   '/app.js',
+  '/firebase-config.js',
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',

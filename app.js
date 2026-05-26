@@ -89,9 +89,23 @@ function loadData() {
   state.list     = l ? JSON.parse(l) : [];
 }
 
-function saveStores()   { localStorage.setItem('courses_stores',   JSON.stringify(state.stores)); }
+function saveStores() {
+  localStorage.setItem('courses_stores', JSON.stringify(state.stores));
+  if (_db && ROOM_ID) {
+    const obj = {};
+    state.stores.forEach(s => { obj[s.id] = s; });
+    _db.ref(`rooms/${ROOM_ID}/stores`).set(obj).catch(() => {});
+  }
+}
 function saveProducts() { localStorage.setItem('courses_products', JSON.stringify(state.products)); }
-function saveList()     { localStorage.setItem('courses_list',     JSON.stringify(state.list)); }
+function saveList() {
+  localStorage.setItem('courses_list', JSON.stringify(state.list));
+  if (_db && ROOM_ID) {
+    const obj = {};
+    state.list.forEach(item => { obj[item.id] = item; });
+    _db.ref(`rooms/${ROOM_ID}/list`).set(obj).catch(() => {});
+  }
+}
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 
@@ -130,6 +144,90 @@ const OFF_PRODUCT = 'https://world.openfoodfacts.org/api/v2/product/';
 let _offTimer = null;
 let _offAbort = null;
 let _scanner  = null;
+
+// ── FIREBASE / ROOM PARTAGÉ ───────────────────────────────────────────────────
+
+let ROOM_ID = '';
+let _db     = null;
+
+function getOrCreateRoomId() {
+  // 1. URL hash (lien partagé)
+  let id = window.location.hash.replace('#', '').trim();
+  if (id.length >= 8) { localStorage.setItem('courses_room', id); return id; }
+  // 2. Dernière salle connue (PWA depuis l'écran d'accueil)
+  id = localStorage.getItem('courses_room') || '';
+  if (id.length >= 8) { history.replaceState(null, '', '#' + id); return id; }
+  // 3. Nouvelle salle
+  id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  localStorage.setItem('courses_room', id);
+  history.replaceState(null, '', '#' + id);
+  return id;
+}
+
+function initFirebase() {
+  if (typeof firebase === 'undefined') return;
+  const cfg = (typeof FIREBASE_CONFIG !== 'undefined') ? FIREBASE_CONFIG : {};
+  if (!cfg.databaseURL) return;
+
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(cfg);
+    _db = firebase.database();
+    ROOM_ID = getOrCreateRoomId();
+
+    // Initialise les magasins si c'est une nouvelle salle
+    _db.ref(`rooms/${ROOM_ID}/stores`).once('value').then(snap => {
+      if (!snap.val()) {
+        const obj = {};
+        state.stores.forEach(s => { obj[s.id] = s; });
+        _db.ref(`rooms/${ROOM_ID}/stores`).set(obj);
+      }
+    });
+
+    // Écoute les changements de liste (tous les appareils)
+    _db.ref(`rooms/${ROOM_ID}/list`).on('value', snap => {
+      const val = snap.val();
+      state.list = val
+        ? Object.values(val).sort((a, b) => new Date(a.dateAdded) - new Date(b.dateAdded))
+        : [];
+      localStorage.setItem('courses_list', JSON.stringify(state.list));
+      if (state.currentView === 'liste')    renderListe(document.getElementById('app-content'));
+      if (state.currentView === 'partager') renderPartager(document.getElementById('app-content'));
+    });
+
+    // Écoute les changements de magasins
+    _db.ref(`rooms/${ROOM_ID}/stores`).on('value', snap => {
+      const val = snap.val();
+      if (val && Object.keys(val).length) {
+        state.stores = Object.values(val);
+        localStorage.setItem('courses_stores', JSON.stringify(state.stores));
+        if (state.currentView === 'gerer') renderGerer(document.getElementById('app-content'));
+      }
+    });
+
+    showToast('🔗 Panier partagé connecté');
+  } catch(e) {
+    _db = null; // Repli sur localStorage
+  }
+}
+
+// Écrit UN seul article dans Firebase (évite d'écraser les modifications simultanées)
+function fbSaveItem(item) {
+  if (_db && ROOM_ID) {
+    _db.ref(`rooms/${ROOM_ID}/list/${item.id}`).set(item).catch(() => {});
+  }
+}
+// Supprime UN article dans Firebase
+function fbRemoveItem(id) {
+  if (_db && ROOM_ID) {
+    _db.ref(`rooms/${ROOM_ID}/list/${id}`).remove().catch(() => {});
+  }
+}
+// Vide toute la liste dans Firebase
+function fbClearList() {
+  if (_db && ROOM_ID) {
+    _db.ref(`rooms/${ROOM_ID}/list`).remove().catch(() => {});
+  }
+}
 
 async function searchOFF(query) {
   if (_offAbort) _offAbort.abort();
@@ -367,20 +465,31 @@ function setListFilter(f) { state.listFilter = f; renderListe(document.getElemen
 
 function toggleItem(id) {
   const item = state.list.find(i => i.id === id);
-  if (item) { item.checked = !item.checked; saveList(); renderListe(document.getElementById('app-content')); }
+  if (!item) return;
+  item.checked = !item.checked;
+  localStorage.setItem('courses_list', JSON.stringify(state.list));
+  if (_db && ROOM_ID) fbSaveItem(item); else saveList();
+  renderListe(document.getElementById('app-content'));
 }
 function deleteItem(id) {
   state.list = state.list.filter(i => i.id !== id);
-  saveList(); renderListe(document.getElementById('app-content'));
+  localStorage.setItem('courses_list', JSON.stringify(state.list));
+  if (_db && ROOM_ID) fbRemoveItem(id); else saveList();
+  renderListe(document.getElementById('app-content'));
 }
 function checkAll() {
   state.list.forEach(i => i.checked = true);
-  saveList(); renderListe(document.getElementById('app-content'));
+  localStorage.setItem('courses_list', JSON.stringify(state.list));
+  if (_db && ROOM_ID) state.list.forEach(i => fbSaveItem(i)); else saveList();
+  renderListe(document.getElementById('app-content'));
 }
 function deleteChecked() {
-  const n = state.list.filter(i => i.checked).length;
+  const toDelete = state.list.filter(i => i.checked).map(i => i.id);
+  const n = toDelete.length;
   state.list = state.list.filter(i => !i.checked);
-  saveList(); renderListe(document.getElementById('app-content'));
+  localStorage.setItem('courses_list', JSON.stringify(state.list));
+  if (_db && ROOM_ID) toDelete.forEach(id => fbRemoveItem(id)); else saveList();
+  renderListe(document.getElementById('app-content'));
   showToast(`🗑 ${n} article(s) supprimé(s)`);
 }
 function confirmClearAll() {
@@ -391,7 +500,10 @@ function confirmClearAll() {
     </div>`, 'Confirmer');
 }
 function clearAll() {
-  state.list = []; saveList(); closeModal();
+  state.list = [];
+  localStorage.setItem('courses_list', '[]');
+  if (_db && ROOM_ID) fbClearList(); else saveList();
+  closeModal();
   renderListe(document.getElementById('app-content'));
   showToast('Liste vidée');
 }
@@ -608,7 +720,8 @@ function addToList() {
   if (offImg) item.img = offImg;
 
   state.list.push(item);
-  saveList();
+  localStorage.setItem('courses_list', JSON.stringify(state.list));
+  if (_db && ROOM_ID) fbSaveItem(item); else saveList();
   showToast(`✓ "${name}" ajouté`);
 
   clearSelectedProduct();
@@ -859,16 +972,46 @@ function renderPartager(container) {
   const total   = state.list.length;
   const checked = state.list.filter(i => i.checked).length;
 
+  // Section lien partagé (visible seulement si Firebase est configuré)
+  const shareUrl = ROOM_ID
+    ? `${window.location.origin}${window.location.pathname}#${ROOM_ID}`
+    : '';
+  const roomSection = shareUrl ? `
+    <div class="room-share-box">
+      <div class="room-share-title">🔗 Panier partagé en temps réel</div>
+      <p class="room-share-desc">Envoie ce lien — tout le monde voit et modifie la même liste :</p>
+      <div class="room-url-row">
+        <span class="room-url-text">${esc(shareUrl)}</span>
+        <button class="room-copy-btn" onclick="copyRoomUrl()">Copier</button>
+      </div>
+      <div class="room-share-actions">
+        <button class="share-btn whatsapp" onclick="shareRoomWhatsapp()">
+          <span class="share-icon">💬</span><span>WhatsApp</span>
+        </button>
+        <button class="share-btn share-native" onclick="shareRoomNative()">
+          <span class="share-icon">📤</span><span>Partager…</span>
+        </button>
+      </div>
+      <img class="room-qr"
+           src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&bgcolor=ffffff&data=${encodeURIComponent(shareUrl)}"
+           alt="QR Code" loading="lazy">
+    </div>` : '';
+
   if (total === 0) {
-    container.innerHTML = `<div class="empty-state">
-      <div class="empty-icon">📋</div>
-      <p>Votre liste est vide</p>
-      <button class="btn-primary" onclick="showView('ajouter')">Ajouter des articles</button>
+    container.innerHTML = `<div class="share-container">
+      ${roomSection}
+      <div class="empty-state" style="padding-top:32px">
+        <div class="empty-icon">📋</div>
+        <p>Votre liste est vide</p>
+        <button class="btn-primary" onclick="showView('ajouter')">Ajouter des articles</button>
+      </div>
     </div>`;
     return;
   }
 
   container.innerHTML = `<div class="share-container">
+    ${roomSection}
+    <div class="share-section-title">Envoyer la liste par texte</div>
     <div class="share-preview">
       <div class="share-stats">${total} article(s) · ${checked} cochés · ${total - checked} restants</div>
       <pre class="share-text">${esc(text)}</pre>
@@ -888,6 +1031,27 @@ function renderPartager(container) {
       </button>
     </div>
   </div>`;
+}
+
+async function copyRoomUrl() {
+  const url = `${window.location.origin}${window.location.pathname}#${ROOM_ID}`;
+  try { await navigator.clipboard.writeText(url); }
+  catch { const ta = document.createElement('textarea'); ta.value=url; ta.style.cssText='position:fixed;opacity:0'; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); }
+  showToast('✓ Lien copié !');
+}
+
+function shareRoomWhatsapp() {
+  const url = `${window.location.origin}${window.location.pathname}#${ROOM_ID}`;
+  window.open('https://wa.me/?text=' + encodeURIComponent('🛒 Rejoins notre liste de courses :\n' + url), '_blank');
+}
+
+async function shareRoomNative() {
+  const url = `${window.location.origin}${window.location.pathname}#${ROOM_ID}`;
+  if (navigator.share) {
+    try { await navigator.share({ title: 'Liste de courses partagée', url }); return; }
+    catch(e) { if (e.name === 'AbortError') return; }
+  }
+  copyRoomUrl();
 }
 
 function buildShareText() {
@@ -980,6 +1144,7 @@ async function triggerInstall() {
 
 document.addEventListener('DOMContentLoaded', () => {
   loadData();
+  initFirebase();
   showView('liste');
 
   window.addEventListener('popstate', () => {
