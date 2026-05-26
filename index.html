@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Courses">
+  <meta name="theme-color" content="#2E7D32">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <title>Liste de Courses</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <span id="page-title">Ma Liste 🛒</span>
+  </header>
+
+  <main id="app-content"></main>
+
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-view="liste" onclick="showView('liste')">
+      <span class="nav-icon">🛒</span>
+      <span class="nav-label">Liste</span>
+    </button>
+    <button class="nav-btn" data-view="ajouter" onclick="showView('ajouter')">
+      <span class="nav-icon">➕</span>
+      <span class="nav-label">Ajouter</span>
+    </button>
+    <button class="nav-btn" data-view="gerer" onclick="showView('gerer')">
+      <span class="nav-icon">⚙️</span>
+      <span class="nav-label">Gérer</span>
+    </button>
+    <button class="nav-btn" data-view="partager" onclick="showView('partager')">
+      <span class="nav-icon">📤</span>
+      <span class="nav-label">Partager</span>
+    </button>
+  </nav>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <div id="modal-overlay" class="modal-overlay hidden" onclick="closeModal()">
+    <div class="modal" onclick="event.stopPropagation()">
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
