@@ -129,6 +129,7 @@ const OFF_PRODUCT = 'https://world.openfoodfacts.org/api/v2/product/';
 
 let _offTimer = null;
 let _offAbort = null;
+let _scanner  = null;
 
 async function searchOFF(query) {
   if (_offAbort) _offAbort.abort();
@@ -156,38 +157,47 @@ async function lookupBarcode(barcode) {
 }
 
 function startBarcodeCapture() {
-  if ('BarcodeDetector' in window) {
-    document.getElementById('barcode-camera-input')?.click();
-  } else {
+  openModal(`
+    <p class="scanner-hint">Pointez la caméra sur le code-barres EAN</p>
+    <div id="scanner-view" class="scanner-view"></div>
+    <div class="modal-actions" style="margin-top:14px">
+      <button class="btn-secondary" onclick="closeModal()">Annuler</button>
+      <button class="btn-primary" onclick="stopScanner();closeModal();showBarcodeModal()">Manuel</button>
+    </div>`, 'Scanner');
+  setTimeout(startHtml5Scanner, 200);
+}
+
+async function startHtml5Scanner() {
+  const container = document.getElementById('scanner-view');
+  if (!container) return;
+
+  if (typeof Html5Qrcode === 'undefined') {
+    closeModal(); showBarcodeModal(); return;
+  }
+
+  try {
+    _scanner = new Html5Qrcode('scanner-view', { verbose: false });
+    await _scanner.start(
+      { facingMode: 'environment' },
+      { fps: 12, qrbox: { width: 280, height: 110 } },
+      async (code) => {
+        stopScanner();
+        closeModal();
+        await processBarcode(code);
+      }
+    );
+  } catch(e) {
+    _scanner = null;
+    closeModal();
     showBarcodeModal();
   }
 }
 
-async function handleBarcodeCapture(input) {
-  const file = input.files?.[0];
-  if (!file) return;
-  input.value = '';
-
-  if (!('BarcodeDetector' in window)) {
-    showBarcodeModal();
-    return;
-  }
-
-  showToast('🔍 Lecture du code-barres…', 5000);
-  try {
-    const bitmap = await createImageBitmap(file);
-    const detector = new BarcodeDetector({ formats: ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf'] });
-    const barcodes = await detector.detect(bitmap);
-    bitmap.close?.();
-    if (barcodes.length === 0) {
-      showToast('Code-barres non détecté');
-      showBarcodeModal();
-      return;
-    }
-    await processBarcode(barcodes[0].rawValue);
-  } catch(e) {
-    showToast('Erreur de lecture');
-    showBarcodeModal();
+function stopScanner() {
+  if (_scanner) {
+    const s = _scanner;
+    _scanner = null;
+    s.stop().catch(() => {}).then(() => { try { s.clear(); } catch {} });
   }
 }
 
@@ -256,6 +266,7 @@ function openModal(bodyHtml, title = '') {
 }
 
 function closeModal() {
+  stopScanner();
   document.getElementById('modal-overlay').classList.add('hidden');
   document.getElementById('modal-content').innerHTML = '';
 }
@@ -413,8 +424,6 @@ function renderAjouter(container) {
           </svg>
         </button>
       </div>
-      <input type="file" id="barcode-camera-input" accept="image/*" capture="environment"
-             style="display:none" onchange="handleBarcodeCapture(this)">
       <div id="products-list" class="products-list"></div>
       <input type="hidden" id="add-product-id">
       <div id="selected-product" class="selected-product hidden">

@@ -624,6 +624,26 @@ p.warning { color: var(--danger); font-size: .83rem; background: var(--danger-li
   align-self: center;
 }
 
+/* ── BARCODE SCANNER MODAL ── */
+.scanner-hint {
+  text-align: center;
+  font-size: .82rem;
+  color: var(--text-light);
+  margin-bottom: 10px;
+}
+.scanner-view {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  max-height: 300px;
+  background: #000;
+  border-radius: 12px;
+  overflow: hidden;
+  position: relative;
+}
+/* Override html5-qrcode internal styles */
+#scanner-view video { object-fit: cover !important; }
+#scanner-view canvas { border-radius: 12px; }
+
 /* ── LIST ITEM THUMBNAIL ── */
 .item-thumb {
   width: 38px;
