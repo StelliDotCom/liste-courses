@@ -122,6 +122,127 @@ function getCategories() {
   return cats;
 }
 
+// ── OPEN FOOD FACTS ───────────────────────────────────────────────────────────
+
+const OFF_SEARCH = 'https://world.openfoodfacts.org/api/v2/search';
+const OFF_PRODUCT = 'https://world.openfoodfacts.org/api/v2/product/';
+
+let _offTimer = null;
+let _offAbort = null;
+
+async function searchOFF(query) {
+  if (_offAbort) _offAbort.abort();
+  _offAbort = new AbortController();
+  try {
+    const url = `${OFF_SEARCH}?search_terms=${encodeURIComponent(query)}&fields=product_name,brands,image_front_small_url&page_size=8&json=true`;
+    const resp = await fetch(url, { signal: _offAbort.signal });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data.products || []).filter(p => p.product_name && p.product_name.trim());
+  } catch(e) {
+    if (e.name === 'AbortError') return null;
+    return [];
+  }
+}
+
+async function lookupBarcode(barcode) {
+  try {
+    const resp = await fetch(`${OFF_PRODUCT}${barcode}.json?fields=product_name,brands,image_front_small_url`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    if (data.status === 1 && data.product?.product_name) return data.product;
+    return null;
+  } catch { return null; }
+}
+
+function startBarcodeCapture() {
+  if ('BarcodeDetector' in window) {
+    document.getElementById('barcode-camera-input')?.click();
+  } else {
+    showBarcodeModal();
+  }
+}
+
+async function handleBarcodeCapture(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  input.value = '';
+
+  if (!('BarcodeDetector' in window)) {
+    showBarcodeModal();
+    return;
+  }
+
+  showToast('🔍 Lecture du code-barres…', 5000);
+  try {
+    const bitmap = await createImageBitmap(file);
+    const detector = new BarcodeDetector({ formats: ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf'] });
+    const barcodes = await detector.detect(bitmap);
+    bitmap.close?.();
+    if (barcodes.length === 0) {
+      showToast('Code-barres non détecté');
+      showBarcodeModal();
+      return;
+    }
+    await processBarcode(barcodes[0].rawValue);
+  } catch(e) {
+    showToast('Erreur de lecture');
+    showBarcodeModal();
+  }
+}
+
+async function processBarcode(barcode) {
+  showToast('🔍 Recherche du produit…', 5000);
+  const product = await lookupBarcode(barcode);
+  if (!product) {
+    showToast('Produit non trouvé (code: ' + barcode + ')');
+    const s = document.getElementById('add-search');
+    if (s) { s.value = barcode; buildProductList(); }
+    return;
+  }
+  const name = product.product_name.trim();
+  const brand = product.brands ? product.brands.split(',')[0].trim() : '';
+  const img = product.image_front_small_url || '';
+  const display = brand ? `${name} (${brand})` : name;
+  selectOFFProduct(display, img);
+  showToast(`✓ "${name}" trouvé`);
+}
+
+function showBarcodeModal() {
+  openModal(`
+    <div class="form-group">
+      <label>Code-barres</label>
+      <input type="text" id="modal-barcode" class="form-input" inputmode="numeric"
+             pattern="[0-9]*" placeholder="ex: 7610001234567" autofocus>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeModal()">Annuler</button>
+      <button class="btn-primary" onclick="confirmManualBarcode()">Rechercher</button>
+    </div>`, 'Saisir le code-barres');
+}
+
+async function confirmManualBarcode() {
+  const barcode = document.getElementById('modal-barcode')?.value.trim();
+  if (!barcode) { showToast('⚠️ Entrez un code-barres'); return; }
+  closeModal();
+  await processBarcode(barcode);
+}
+
+function selectOFFProduct(displayName, imgUrl) {
+  document.getElementById('add-product-id').value = '';
+  const s = document.getElementById('add-search');
+  s.value = displayName;
+  s.dataset.offImg = imgUrl || '';
+  document.getElementById('products-list').innerHTML = '';
+  document.getElementById('selected-product').classList.remove('hidden');
+  document.getElementById('selected-name').textContent = displayName;
+  const thumb = document.getElementById('selected-thumb');
+  if (thumb) {
+    if (imgUrl) { thumb.src = imgUrl; thumb.style.display = 'block'; }
+    else { thumb.style.display = 'none'; }
+  }
+}
+
 // ── MODAL ─────────────────────────────────────────────────────────────────────
 
 function openModal(bodyHtml, title = '') {
@@ -159,7 +280,6 @@ function renderListe(container) {
   const total   = state.list.length;
   const checked = state.list.filter(i => i.checked).length;
 
-  // Filter bar
   const storeIds = [...new Set(state.list.map(i => i.storeId))];
   let filterHTML = `<div class="filter-scroll">
     <button class="filter-btn ${state.listFilter === 'all' ? 'active' : ''}" onclick="setListFilter('all')">
@@ -196,7 +316,6 @@ function renderListe(container) {
       <button class="btn-sm btn-danger-sm" onclick="confirmClearAll()">🗑 Tout vider</button>
     </div>`;
 
-    // Group by category
     const grouped = {};
     items.forEach(item => {
       const k = item.category || 'Autre';
@@ -208,8 +327,12 @@ function renderListe(container) {
       bodyHTML += `<div class="category-group"><div class="category-header">${esc(cat)}</div>`;
       grouped[cat].forEach(item => {
         const store = getStore(item.storeId);
+        const thumb = item.img
+          ? `<img class="item-thumb" src="${esc(item.img)}" alt="" loading="lazy" onerror="this.remove()">`
+          : '';
         bodyHTML += `<div class="list-item ${item.checked ? 'checked' : ''}" id="li-${item.id}">
           <button class="check-btn" onclick="toggleItem('${item.id}')">${item.checked ? '✓' : ''}</button>
+          ${thumb}
           <div class="item-info" onclick="toggleItem('${item.id}')">
             <span class="item-name">${esc(item.name)}</span>
             <span class="item-details">${esc(item.qty)} ${esc(item.unit)}${item.note ? ' · ' + esc(item.note) : ''}</span>
@@ -277,11 +400,26 @@ function renderAjouter(container) {
     </div>
     <div class="form-group">
       <label>Article *</label>
-      <input type="text" id="add-search" class="form-input"
-             placeholder="Tapez les premières lettres…" autocomplete="off" autocorrect="off" autofocus>
+      <div class="search-row">
+        <input type="text" id="add-search" class="form-input"
+               placeholder="Tapez les premières lettres…" autocomplete="off" autocorrect="off" autofocus>
+        <button class="scan-btn" onclick="startBarcodeCapture()" title="Scanner le code-barres">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3,9 3,3 9,3"/><polyline points="15,3 21,3 21,9"/>
+            <polyline points="21,15 21,21 15,21"/><polyline points="9,21 3,21 3,15"/>
+            <line x1="7" y1="8" x2="7" y2="16"/><line x1="9.5" y1="8" x2="9.5" y2="16"/>
+            <line x1="11" y1="8" x2="11" y2="16"/><line x1="13" y1="8" x2="13" y2="16"/>
+            <line x1="14.5" y1="8" x2="14.5" y2="16"/><line x1="17" y1="8" x2="17" y2="16"/>
+          </svg>
+        </button>
+      </div>
+      <input type="file" id="barcode-camera-input" accept="image/*" capture="environment"
+             style="display:none" onchange="handleBarcodeCapture(this)">
       <div id="products-list" class="products-list"></div>
       <input type="hidden" id="add-product-id">
       <div id="selected-product" class="selected-product hidden">
+        <img id="selected-thumb" src="" alt="" style="display:none"
+             onerror="this.style.display='none'">
         <span id="selected-name"></span>
         <button class="btn-clear" onclick="clearSelectedProduct()">✕</button>
       </div>
@@ -309,19 +447,24 @@ function renderAjouter(container) {
 }
 
 function buildProductList() {
-  const search = (document.getElementById('add-search')?.value || '').toLowerCase().trim();
+  const searchEl = document.getElementById('add-search');
+  const search = (searchEl?.value || '').toLowerCase().trim();
   const selId  = document.getElementById('add-product-id')?.value || '';
   const listEl = document.getElementById('products-list');
   if (!listEl || selId) return;
 
+  clearTimeout(_offTimer);
+  if (_offAbort) { _offAbort.abort(); _offAbort = null; }
+
   if (!search) { listEl.innerHTML = ''; return; }
 
+  // Local results
   let filtered = state.products.filter(p => p.name.toLowerCase().includes(search));
   filtered.sort((a,b) => a.name.localeCompare(b.name));
 
   listEl.innerHTML = '';
 
-  filtered.slice(0, 25).forEach(p => {
+  filtered.slice(0, 8).forEach(p => {
     const div = document.createElement('div');
     div.className = 'product-option';
     div.innerHTML = `<span>${esc(p.name)}</span><span class="product-cat">${esc(p.category)}</span>`;
@@ -330,39 +473,95 @@ function buildProductList() {
   });
 
   const exactMatch = filtered.find(p => p.name.toLowerCase() === search);
-  if (search && !exactMatch) {
-    const rawName = document.getElementById('add-search').value.trim();
+  if (!exactMatch) {
+    const rawName = searchEl.value.trim();
     const div = document.createElement('div');
     div.className = 'product-option create-new';
     div.textContent = `➕ Créer "${rawName}"`;
     div.addEventListener('click', () => selectNewProduct(rawName));
     listEl.appendChild(div);
   }
+
+  // Debounced Open Food Facts search
+  _offTimer = setTimeout(async () => {
+    if (!document.getElementById('add-search')) return;
+    const cur = (document.getElementById('add-search')?.value || '').toLowerCase().trim();
+    if (cur !== search) return;
+
+    const loadDiv = document.createElement('div');
+    loadDiv.className = 'off-loading';
+    loadDiv.id = 'off-loading';
+    loadDiv.textContent = '🔍 Recherche Open Food Facts…';
+    listEl.appendChild(loadDiv);
+
+    const results = await searchOFF(search);
+
+    document.getElementById('off-loading')?.remove();
+    if (!results || !results.length) return;
+    if (!document.getElementById('add-search')) return;
+    if ((document.getElementById('add-search')?.value || '').toLowerCase().trim() !== search) return;
+
+    const sep = document.createElement('div');
+    sep.className = 'off-separator';
+    sep.textContent = '📷 Open Food Facts';
+    listEl.appendChild(sep);
+
+    results.slice(0, 6).forEach(p => {
+      const name = p.product_name.trim();
+      const brand = p.brands ? p.brands.split(',')[0].trim() : '';
+      const img = p.image_front_small_url || '';
+      const display = brand ? `${name} (${brand})` : name;
+
+      const div = document.createElement('div');
+      div.className = 'product-option off-product';
+      div.innerHTML = `
+        ${img
+          ? `<img class="product-thumb" src="${esc(img)}" alt="" loading="lazy" onerror="this.style.display='none'">`
+          : '<div class="product-thumb-placeholder"></div>'}
+        <div class="off-product-info">
+          <span class="off-product-name">${esc(name)}</span>
+          ${brand ? `<span class="off-product-brand">${esc(brand)}</span>` : ''}
+        </div>
+        <span class="off-badge">OFF</span>`;
+      div.addEventListener('click', () => selectOFFProduct(display, img));
+      listEl.appendChild(div);
+    });
+  }, 650);
 }
 
 function selectProduct(id, name, unit, category) {
   document.getElementById('add-product-id').value = id;
-  document.getElementById('add-search').value = name;
+  const s = document.getElementById('add-search');
+  s.value = name;
+  delete s.dataset.offImg;
   document.getElementById('add-unit').value = unit || 'pièce';
   document.getElementById('products-list').innerHTML = '';
   document.getElementById('selected-product').classList.remove('hidden');
   document.getElementById('selected-name').textContent = name;
+  const thumb = document.getElementById('selected-thumb');
+  if (thumb) thumb.style.display = 'none';
 }
 
 function selectNewProduct(name) {
   document.getElementById('add-product-id').value = '';
-  document.getElementById('add-search').value = name;
+  const s = document.getElementById('add-search');
+  s.value = name;
+  delete s.dataset.offImg;
   document.getElementById('products-list').innerHTML = '';
   document.getElementById('selected-product').classList.remove('hidden');
   document.getElementById('selected-name').textContent = name + ' (nouveau)';
+  const thumb = document.getElementById('selected-thumb');
+  if (thumb) thumb.style.display = 'none';
 }
 
 function clearSelectedProduct() {
   document.getElementById('add-product-id').value = '';
   document.getElementById('selected-product').classList.add('hidden');
   document.getElementById('selected-name').textContent = '';
-  document.getElementById('add-search').value = '';
-  document.getElementById('add-search').focus();
+  const thumb = document.getElementById('selected-thumb');
+  if (thumb) thumb.style.display = 'none';
+  const s = document.getElementById('add-search');
+  if (s) { s.value = ''; s.focus(); delete s.dataset.offImg; }
   document.getElementById('products-list').innerHTML = '';
 }
 
@@ -373,6 +572,7 @@ function addToList() {
   const qty     = parseFloat(document.getElementById('add-qty').value) || 1;
   const unit    = document.getElementById('add-unit').value;
   const note    = document.getElementById('add-note').value.trim();
+  const offImg  = document.getElementById('add-search')?.dataset?.offImg || '';
 
   if (!storeId) { showToast('⚠️ Choisissez un magasin'); return; }
   if (!name)    { showToast('⚠️ Entrez un article'); return; }
@@ -392,14 +592,16 @@ function addToList() {
     if (p) finalCat = p.category;
   }
 
-  state.list.push({
+  const item = {
     id: uid(), productId: finalId, name, storeId, qty, unit, note,
     category: finalCat, checked: false, dateAdded: new Date().toISOString(),
-  });
+  };
+  if (offImg) item.img = offImg;
+
+  state.list.push(item);
   saveList();
   showToast(`✓ "${name}" ajouté`);
 
-  // Réinitialise seulement l'article — le magasin reste sélectionné
   clearSelectedProduct();
   document.getElementById('add-qty').value = '1';
   document.getElementById('add-note').value = '';
@@ -740,7 +942,6 @@ let _deferredInstall = null;
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault();
   _deferredInstall = e;
-  // Show banner if not already installed
   if (!window.matchMedia('(display-mode: standalone)').matches) {
     showInstallBanner();
   }
@@ -772,12 +973,10 @@ document.addEventListener('DOMContentLoaded', () => {
   loadData();
   showView('liste');
 
-  // Close modal on back
   window.addEventListener('popstate', () => {
     if (!document.getElementById('modal-overlay').classList.contains('hidden')) closeModal();
   });
 
-  // Register service worker
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
