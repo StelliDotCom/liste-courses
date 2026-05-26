@@ -75,6 +75,7 @@ let state = {
   listFilter: 'all',
   gererTab: 'magasins',
   productCatFilter: '',
+  lastStore: 's2',
 };
 
 // ── STORAGE ───────────────────────────────────────────────────────────────────
@@ -264,25 +265,20 @@ function clearAll() {
 // ── VIEW: AJOUTER ─────────────────────────────────────────────────────────────
 
 function renderAjouter(container) {
-  let storeOpts = '<option value="">— Choisir un magasin —</option>';
-  state.stores.forEach(s => { storeOpts += `<option value="${s.id}">${s.emoji} ${esc(s.name)}</option>`; });
-
-  let catOpts = '<option value="">Toutes les catégories</option>';
-  getCategories().forEach(c => { catOpts += `<option value="${esc(c)}">${esc(c)}</option>`; });
+  let storeOpts = '';
+  state.stores.forEach(s => {
+    storeOpts += `<option value="${s.id}" ${s.id === state.lastStore ? 'selected' : ''}>${s.emoji} ${esc(s.name)}</option>`;
+  });
 
   container.innerHTML = `<div class="add-form">
     <div class="form-group">
-      <label>Magasin *</label>
-      <select id="add-store" class="form-select">${storeOpts}</select>
-    </div>
-    <div class="form-group">
-      <label>Catégorie</label>
-      <select id="add-category" class="form-select">${catOpts}</select>
+      <label>Magasin</label>
+      <select id="add-store" class="form-select" onchange="state.lastStore=this.value">${storeOpts}</select>
     </div>
     <div class="form-group">
       <label>Article *</label>
       <input type="text" id="add-search" class="form-input"
-             placeholder="Rechercher ou saisir un article…" autocomplete="off" autocorrect="off">
+             placeholder="Tapez les premières lettres…" autocomplete="off" autocorrect="off" autofocus>
       <div id="products-list" class="products-list"></div>
       <input type="hidden" id="add-product-id">
       <div id="selected-product" class="selected-product hidden">
@@ -309,23 +305,18 @@ function renderAjouter(container) {
     <button class="btn-primary btn-large" onclick="addToList()">➕ Ajouter à la liste</button>
   </div>`;
 
-  // Wire up search
   document.getElementById('add-search').addEventListener('input', buildProductList);
-  document.getElementById('add-category').addEventListener('change', buildProductList);
 }
 
 function buildProductList() {
   const search = (document.getElementById('add-search')?.value || '').toLowerCase().trim();
-  const cat    = document.getElementById('add-category')?.value || '';
   const selId  = document.getElementById('add-product-id')?.value || '';
   const listEl = document.getElementById('products-list');
   if (!listEl || selId) return;
 
-  if (!search && !cat) { listEl.innerHTML = ''; return; }
+  if (!search) { listEl.innerHTML = ''; return; }
 
-  let filtered = state.products;
-  if (cat)    filtered = filtered.filter(p => p.category === cat);
-  if (search) filtered = filtered.filter(p => p.name.toLowerCase().includes(search));
+  let filtered = state.products.filter(p => p.name.toLowerCase().includes(search));
   filtered.sort((a,b) => a.name.localeCompare(b.name));
 
   listEl.innerHTML = '';
@@ -356,9 +347,6 @@ function selectProduct(id, name, unit, category) {
   document.getElementById('products-list').innerHTML = '';
   document.getElementById('selected-product').classList.remove('hidden');
   document.getElementById('selected-name').textContent = name;
-  // Set category filter if not already set
-  const catSel = document.getElementById('add-category');
-  if (catSel && !catSel.value) catSel.value = category;
 }
 
 function selectNewProduct(name) {
@@ -385,20 +373,20 @@ function addToList() {
   const qty     = parseFloat(document.getElementById('add-qty').value) || 1;
   const unit    = document.getElementById('add-unit').value;
   const note    = document.getElementById('add-note').value.trim();
-  const cat     = document.getElementById('add-category').value;
 
   if (!storeId) { showToast('⚠️ Choisissez un magasin'); return; }
   if (!name)    { showToast('⚠️ Entrez un article'); return; }
 
+  state.lastStore = storeId;
+
   let finalId = prodId;
-  let finalCat = cat;
+  let finalCat = 'Autre';
 
   if (!prodId) {
-    const newProd = { id: uid(), name, category: cat || 'Autre', unit };
+    const newProd = { id: uid(), name, category: 'Autre', unit };
     state.products.push(newProd);
     saveProducts();
     finalId = newProd.id;
-    finalCat = newProd.category;
   } else {
     const p = getProduct(prodId);
     if (p) finalCat = p.category;
@@ -406,17 +394,15 @@ function addToList() {
 
   state.list.push({
     id: uid(), productId: finalId, name, storeId, qty, unit, note,
-    category: finalCat || 'Autre', checked: false, dateAdded: new Date().toISOString(),
+    category: finalCat, checked: false, dateAdded: new Date().toISOString(),
   });
   saveList();
   showToast(`✓ "${name}" ajouté`);
 
-  // Reset
-  document.getElementById('add-store').value = '';
+  // Réinitialise seulement l'article — le magasin reste sélectionné
   clearSelectedProduct();
   document.getElementById('add-qty').value = '1';
   document.getElementById('add-note').value = '';
-  buildProductList();
 }
 
 // ── VIEW: GÉRER ───────────────────────────────────────────────────────────────
